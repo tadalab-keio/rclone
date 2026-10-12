@@ -671,7 +671,10 @@ func (item *Item) _store(ctx context.Context, storeFn StoreFn) (err error) {
 				fs.Errorf(name, "Writeback failed: %v", err)
 				return nil
 			}
-			item._rescue("upload failed")
+			// a cancelled upload (a rename starts it again) is not a failure
+			if ctx.Err() == nil {
+				item._rescue("upload failed")
+			}
 			return fmt.Errorf("vfs cache: failed to transfer file from cache to remote: %w", err)
 		}
 		item.o = o
