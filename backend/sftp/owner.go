@@ -17,7 +17,10 @@ package sftp
 //
 // replace_keep_attrs: when a file is moved over an existing file, the moved
 // file first gets the owner, group and permission bits of the file it
-// replaces. Uploads end this way since v1.63 (the .partial file is moved
+// replaces, and the extended attributes the server reports for it (SFTP v3
+// attribute extensions, "name@domain" pairs in its stat replies, given back
+// with a setstat; the lab's server reports a file's SELinux label this way).
+// OpenSSH's sftp-server reports none. Uploads end this way since v1.63 (the .partial file is moved
 // over the old one, see --inplace), and so do editors saving through a
 // temporary file. Writing into the file kept these; replacing it made them
 // those of a new file. A move over an existing object through
@@ -135,11 +138,20 @@ func (f *Fs) applyNew(ctx context.Context, p string, isDir bool) {
 // file moved to its path (operations.Move deletes, then moves at once)
 const keepRemovedFor = 10 * time.Second
 
-// fileAttrs are the owner, group and mode of a removed file
+// fileAttrs are the owner, group, mode and extended attributes of a removed file
 type fileAttrs struct {
 	uid, gid int
 	mode     os.FileMode
+	ext      []sftp.StatExtended
 	at       time.Time
+}
+
+// extended returns the extended attributes in a stat result
+func extended(fi os.FileInfo) []sftp.StatExtended {
+	if st, ok := fi.Sys().(*sftp.FileStat); ok {
+		return st.Extended
+	}
+	return nil
 }
 
 // rememberRemoved keeps the owner and mode of p, a file about to be removed
@@ -165,7 +177,7 @@ func (f *Fs) rememberRemoved(c *conn, p string) {
 			delete(f.removed, k)
 		}
 	}
-	f.removed[p] = fileAttrs{uid: uid, gid: gid, mode: fi.Mode() & modeBits, at: time.Now()}
+	f.removed[p] = fileAttrs{uid: uid, gid: gid, mode: fi.Mode() & modeBits, ext: extended(fi), at: time.Now()}
 }
 
 // takeRemoved returns the owner and mode of a file removed at p just before
@@ -195,7 +207,7 @@ func (f *Fs) keepReplacedAttrs(c *conn, src, dst string) {
 		if !ok {
 			return
 		}
-		a = fileAttrs{uid: uid, gid: gid, mode: fi.Mode() & modeBits}
+		a = fileAttrs{uid: uid, gid: gid, mode: fi.Mode() & modeBits, ext: extended(fi)}
 	case errors.Is(err, iofs.ErrNotExist):
 		var ok bool
 		if a, ok = f.takeRemoved(dst); !ok {
@@ -210,6 +222,11 @@ func (f *Fs) keepReplacedAttrs(c *conn, src, dst string) {
 	}
 	if err := c.sftpClient.Chmod(src, a.mode); err != nil {
 		fs.Debugf(f, "replace %q: mode %v not kept: %v", dst, a.mode, err)
+	}
+	if len(a.ext) > 0 {
+		if err := c.sftpClient.SetExtendedData(src, a.ext); err != nil {
+			fs.Debugf(f, "replace %q: extended attributes not kept: %v", dst, err)
+		}
 	}
 }
 

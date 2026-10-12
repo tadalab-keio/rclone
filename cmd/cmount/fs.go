@@ -32,6 +32,8 @@ type FS struct {
 	handles   []vfs.Handle
 	destroyed atomic.Int32
 	recycle   *vfs.VFS // the local \$RECYCLE.BIN tree on Windows, see trash.go
+	roOnce    sync.Once
+	roDirs    []string // cleaned --read-only-dir, see attrs.go
 }
 
 // NewFS makes a new FS
@@ -159,6 +161,7 @@ func (fsys *FS) stat(node vfs.Node, stat *fuse.Stat_t) (errc int) {
 	stat.Blksize = 512
 	stat.Blocks = int64(Blocks)
 	stat.Birthtim = t
+	stat.Flags = fsys.statFlags(node)
 	// fs.Debugf(nil, "stat = %+v", *stat)
 	return 0
 }
@@ -287,6 +290,11 @@ func (fsys *FS) Statfs(path string, stat *fuse.Statfs_t) (errc int) {
 func (fsys *FS) OpenEx(path string, fi *fuse.FileInfo_t) (errc int) {
 	defer log.Trace(path, "flags=0x%X", fi.Flags)("errc=%d, fh=0x%X", &errc, &fi.Fh)
 	fi.Fh = fhUnset
+	if writeFlags(fi.Flags) {
+		if errc = fsys.refuseChange(path); errc != 0 {
+			return errc
+		}
+	}
 
 	// translate the fuse flags to os flags
 	flags := translateOpenFlags(fi.Flags)
@@ -320,6 +328,9 @@ func (fsys *FS) Open(path string, flags int) (errc int, fh uint64) {
 func (fsys *FS) CreateEx(filePath string, mode uint32, fi *fuse.FileInfo_t) (errc int) {
 	defer log.Trace(filePath, "flags=0x%X, mode=0%o", fi.Flags, mode)("errc=%d, fh=0x%X", &errc, &fi.Fh)
 	fi.Fh = fhUnset
+	if errc = fsys.refuseChange(filePath); errc != 0 {
+		return errc
+	}
 	leaf, parentDir, errc := fsys.lookupParentDir(filePath)
 	if errc != 0 {
 		return errc
@@ -350,6 +361,9 @@ func (fsys *FS) Create(filePath string, flags int, mode uint32) (errc int, fh ui
 // Truncate truncates a file to size
 func (fsys *FS) Truncate(path string, size int64, fh uint64) (errc int) {
 	defer log.Trace(path, "size=%d, fh=0x%X", size, fh)("errc=%d", &errc)
+	if errc = fsys.refuseChange(path); errc != 0 {
+		return errc
+	}
 	node, handle, errc := fsys.getNode(path, fh)
 	if errc != 0 {
 		return errc
@@ -419,6 +433,9 @@ func (fsys *FS) Release(path string, fh uint64) (errc int) {
 // Unlink removes a file.
 func (fsys *FS) Unlink(filePath string) (errc int) {
 	defer log.Trace(filePath, "")("errc=%d", &errc)
+	if errc = fsys.refuseChange(filePath); errc != 0 {
+		return errc
+	}
 	leaf, parentDir, errc := fsys.lookupParentDir(filePath)
 	if errc != 0 {
 		return errc
@@ -429,6 +446,9 @@ func (fsys *FS) Unlink(filePath string) (errc int) {
 // Mkdir creates a directory.
 func (fsys *FS) Mkdir(dirPath string, mode uint32) (errc int) {
 	defer log.Trace(dirPath, "mode=0%o", mode)("errc=%d", &errc)
+	if errc = fsys.refuseChange(dirPath); errc != 0 {
+		return errc
+	}
 	leaf, parentDir, errc := fsys.lookupParentDir(dirPath)
 	if errc != 0 {
 		return errc
@@ -440,6 +460,9 @@ func (fsys *FS) Mkdir(dirPath string, mode uint32) (errc int) {
 // Rmdir removes a directory
 func (fsys *FS) Rmdir(dirPath string) (errc int) {
 	defer log.Trace(dirPath, "")("errc=%d", &errc)
+	if errc = fsys.refuseChange(dirPath); errc != 0 {
+		return errc
+	}
 	leaf, parentDir, errc := fsys.lookupParentDir(dirPath)
 	if errc != 0 {
 		return errc
@@ -450,6 +473,9 @@ func (fsys *FS) Rmdir(dirPath string) (errc int) {
 // Rename renames a file.
 func (fsys *FS) Rename(oldPath string, newPath string) (errc int) {
 	defer log.Trace(oldPath, "newPath=%q", newPath)("errc=%d", &errc)
+	if errc = fsys.refuseChange(oldPath, newPath); errc != 0 {
+		return errc
+	}
 	oldRecycle, newRecycle := fsys.inRecycleBin(oldPath), fsys.inRecycleBin(newPath)
 	if !oldRecycle && newRecycle {
 		return fsys.recycleRename(oldPath, newPath)
@@ -468,6 +494,9 @@ var invalidDateCutoff = time.Date(1601, 1, 2, 0, 0, 0, 0, time.UTC)
 // Utimens changes the access and modification times of a file.
 func (fsys *FS) Utimens(path string, tmsp []fuse.Timespec) (errc int) {
 	defer log.Trace(path, "tmsp=%+v", tmsp)("errc=%d", &errc)
+	if errc = fsys.refuseChange(path); errc != 0 {
+		return errc
+	}
 	node, errc := fsys.lookupNode(path)
 	if errc != 0 {
 		return errc
@@ -507,6 +536,9 @@ func (fsys *FS) Link(oldpath string, newpath string) (errc int) {
 // Symlink creates a symbolic link.
 func (fsys *FS) Symlink(target string, newpath string) (errc int) {
 	defer log.Trace(target, "newpath=%q, target=%q", newpath, target)("errc=%d", &errc)
+	if errc = fsys.refuseChange(newpath); errc != 0 {
+		return errc
+	}
 	return translateError(fsys.vfsFor(newpath).Symlink(target, newpath))
 }
 

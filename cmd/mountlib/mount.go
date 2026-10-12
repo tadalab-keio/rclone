@@ -151,12 +151,22 @@ var OptionsInfo = fs.Options{{
 }, {
 	Name:    "windows_trash",
 	Default: true,
-	Help:    "Move what Explorer sends to the Recycle Bin into the freedesktop trash on the remote (/home/<user>/.local/share/Trash) instead of deleting it; the Recycle Bin itself stays on the PC (supported on Windows only)",
+	Help:    "Move what Explorer sends to the Recycle Bin into the freedesktop trash on the remote (the trash of the owner of its directory, with an sftp remote) instead of deleting it; the Recycle Bin itself stays on the PC (supported on Windows only)",
 	Groups:  "Mount",
 }, {
 	Name:    "windows_trash_other",
 	Default: ".local/share/Trash",
-	Help:    "Trash on the remote for recycled items not below /home/<user>/; relative paths are from the login directory (supported on Windows only)",
+	Help:    "Trash on the remote for recycled items whose owner's trash is not known; relative paths are from the login directory (supported on Windows only)",
+	Groups:  "Mount",
+}, {
+	Name:    "windows_hide_dot_files",
+	Default: false,
+	Help:    "Show files and directories whose names begin with a dot as hidden (supported on Windows only)",
+	Groups:  "Mount",
+}, {
+	Name:    "read_only_dir",
+	Default: []string{},
+	Help:    "Directory of the mount (path from its root) where nothing may be changed: writes fail at once and files show as read only (cmount only; repeat for more)",
 	Groups:  "Mount",
 }, {
 	Name:    "drive_icon",
@@ -188,31 +198,33 @@ func init() {
 
 // Options for creating the mount
 type Options struct {
-	DebugFUSE          bool          `config:"debug_fuse"`
-	AllowNonEmpty      bool          `config:"allow_non_empty"`
-	AllowRoot          bool          `config:"allow_root"`
-	AllowOther         bool          `config:"allow_other"`
-	AllowIDMap         bool          `config:"allow_idmap"`
-	DefaultPermissions bool          `config:"default_permissions"`
-	WritebackCache     bool          `config:"write_back_cache"`
-	Daemon             bool          `config:"daemon"`
-	DaemonWait         fs.Duration   `config:"daemon_wait"` // time to wait for ready mount from daemon, maximum on Linux or constant on macOS/BSD
-	MaxReadAhead       fs.SizeSuffix `config:"max_read_ahead"`
-	ExtraOptions       []string      `config:"option"`
-	ExtraFlags         []string      `config:"fuse_flag"`
-	AttrTimeout        fs.Duration   `config:"attr_timeout"` // how long the kernel caches attribute for
-	DeviceName         string        `config:"devname"`
-	VolumeName         string        `config:"volname"`
-	NoAppleDouble      bool          `config:"noappledouble"`
-	NoAppleXattr       bool          `config:"noapplexattr"`
-	DaemonTimeout      fs.Duration   `config:"daemon_timeout"` // OSXFUSE only
-	AsyncRead          bool          `config:"async_read"`
-	NetworkMode        bool          `config:"network_mode"`        // Windows only
-	WindowsTrash       bool          `config:"windows_trash"`       // Windows only
-	WindowsTrashOther  string        `config:"windows_trash_other"` // Windows only
-	DriveIcon          string        `config:"drive_icon"`          // Windows only
-	DirectIO           bool          `config:"direct_io"`           // use Direct IO for file access
-	CaseInsensitive    fs.Tristate   `config:"mount_case_insensitive"`
+	DebugFUSE           bool          `config:"debug_fuse"`
+	AllowNonEmpty       bool          `config:"allow_non_empty"`
+	AllowRoot           bool          `config:"allow_root"`
+	AllowOther          bool          `config:"allow_other"`
+	AllowIDMap          bool          `config:"allow_idmap"`
+	DefaultPermissions  bool          `config:"default_permissions"`
+	WritebackCache      bool          `config:"write_back_cache"`
+	Daemon              bool          `config:"daemon"`
+	DaemonWait          fs.Duration   `config:"daemon_wait"` // time to wait for ready mount from daemon, maximum on Linux or constant on macOS/BSD
+	MaxReadAhead        fs.SizeSuffix `config:"max_read_ahead"`
+	ExtraOptions        []string      `config:"option"`
+	ExtraFlags          []string      `config:"fuse_flag"`
+	AttrTimeout         fs.Duration   `config:"attr_timeout"` // how long the kernel caches attribute for
+	DeviceName          string        `config:"devname"`
+	VolumeName          string        `config:"volname"`
+	NoAppleDouble       bool          `config:"noappledouble"`
+	NoAppleXattr        bool          `config:"noapplexattr"`
+	DaemonTimeout       fs.Duration   `config:"daemon_timeout"` // OSXFUSE only
+	AsyncRead           bool          `config:"async_read"`
+	NetworkMode         bool          `config:"network_mode"`           // Windows only
+	WindowsTrash        bool          `config:"windows_trash"`          // Windows only
+	WindowsTrashOther   string        `config:"windows_trash_other"`    // Windows only
+	DriveIcon           string        `config:"drive_icon"`             // Windows only
+	WindowsHideDotFiles bool          `config:"windows_hide_dot_files"` // Windows only
+	ReadOnlyDirs        []string      `config:"read_only_dir"`          // cmount only
+	DirectIO            bool          `config:"direct_io"`              // use Direct IO for file access
+	CaseInsensitive     fs.Tristate   `config:"mount_case_insensitive"`
 }
 
 type (
