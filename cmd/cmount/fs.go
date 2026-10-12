@@ -31,15 +31,17 @@ type FS struct {
 	mu        sync.Mutex // to protect the below
 	handles   []vfs.Handle
 	destroyed atomic.Int32
+	recycle   *vfs.VFS // the local \$RECYCLE.BIN tree on Windows, see trash.go
 }
 
 // NewFS makes a new FS
 func NewFS(VFS *vfs.VFS, opt *mountlib.Options) *FS {
 	fsys := &FS{
-		VFS:   VFS,
-		f:     VFS.Fs(),
-		opt:   opt,
-		ready: make(chan (struct{})),
+		VFS:     VFS,
+		f:       VFS.Fs(),
+		opt:     opt,
+		ready:   make(chan (struct{})),
+		recycle: newRecycleVFS(VFS.Fs()),
 	}
 	return fsys
 }
@@ -98,7 +100,7 @@ func (fsys *FS) closeHandle(fh uint64) (errc int) {
 
 // lookup a Node given a path
 func (fsys *FS) lookupNode(path string) (node vfs.Node, errc int) {
-	node, err := fsys.VFS.Stat(path)
+	node, err := fsys.vfsFor(path).Stat(path)
 	return node, translateError(err)
 }
 
@@ -188,7 +190,7 @@ func (fsys *FS) Getattr(path string, stat *fuse.Stat_t, fh uint64) (errc int) {
 // Opendir opens path as a directory
 func (fsys *FS) Opendir(path string) (errc int, fh uint64) {
 	defer log.Trace(path, "")("errc=%d, fh=0x%X", &errc, &fh)
-	handle, err := fsys.VFS.OpenFile(path, os.O_RDONLY, 0777)
+	handle, err := fsys.vfsFor(path).OpenFile(path, os.O_RDONLY, 0777)
 	if err != nil {
 		return translateError(err), fhUnset
 	}
@@ -288,7 +290,7 @@ func (fsys *FS) OpenEx(path string, fi *fuse.FileInfo_t) (errc int) {
 
 	// translate the fuse flags to os flags
 	flags := translateOpenFlags(fi.Flags)
-	handle, err := fsys.VFS.OpenFile(path, flags, 0777)
+	handle, err := fsys.vfsFor(path).OpenFile(path, flags, 0777)
 	if err != nil {
 		return translateError(err)
 	}
@@ -448,7 +450,14 @@ func (fsys *FS) Rmdir(dirPath string) (errc int) {
 // Rename renames a file.
 func (fsys *FS) Rename(oldPath string, newPath string) (errc int) {
 	defer log.Trace(oldPath, "newPath=%q", newPath)("errc=%d", &errc)
-	return translateError(fsys.VFS.Rename(oldPath, newPath))
+	oldRecycle, newRecycle := fsys.inRecycleBin(oldPath), fsys.inRecycleBin(newPath)
+	if !oldRecycle && newRecycle {
+		return fsys.recycleRename(oldPath, newPath)
+	}
+	if oldRecycle != newRecycle {
+		return -fuse.EXDEV
+	}
+	return translateError(fsys.vfsFor(oldPath).Rename(oldPath, newPath))
 }
 
 // Windows sometimes seems to send times that are the epoch which is
@@ -498,13 +507,13 @@ func (fsys *FS) Link(oldpath string, newpath string) (errc int) {
 // Symlink creates a symbolic link.
 func (fsys *FS) Symlink(target string, newpath string) (errc int) {
 	defer log.Trace(target, "newpath=%q, target=%q", newpath, target)("errc=%d", &errc)
-	return translateError(fsys.VFS.Symlink(target, newpath))
+	return translateError(fsys.vfsFor(newpath).Symlink(target, newpath))
 }
 
 // Readlink reads the target of a symbolic link.
 func (fsys *FS) Readlink(path string) (errc int, linkPath string) {
 	defer log.Trace(path, "")("errc=%v, linkPath=%q", &errc, linkPath)
-	linkPath, err := fsys.VFS.Readlink(path)
+	linkPath, err := fsys.vfsFor(path).Readlink(path)
 	return translateError(err), linkPath
 }
 

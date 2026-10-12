@@ -379,7 +379,11 @@ func (c *Cache) Exists(name string) bool {
 	return item.Exists()
 }
 
-// rename with os.Rename and more checking
+// rename with file.Rename and more checking
+//
+// file.Rename is like os.Rename but on Windows it can replace a
+// destination which has open handles, which happens whenever the target
+// of the rename is itself cached (see issue #9943).
 func rename(osOldPath, osNewPath string) error {
 	sfi, err := os.Stat(osOldPath)
 	if err != nil {
@@ -411,7 +415,7 @@ func rename(osOldPath, osNewPath string) error {
 			return nil
 		}
 	}
-	if err = os.Rename(osOldPath, osNewPath); err != nil {
+	if err = file.Rename(osOldPath, osNewPath); err != nil {
 		return fmt.Errorf("failed to rename in cache: %s to %s: %w", osOldPath, osNewPath, err)
 	}
 	return nil
@@ -530,6 +534,14 @@ func (c *Cache) walk(dir string, fn func(osPath string, fi os.FileInfo, name str
 		}
 		// And convert into slashes
 		name = filepath.ToSlash(name)
+		// name is a path relative to the cache root so it is in OS
+		// encoding: convert it into the standard encoding used for
+		// remote paths as Cache.get/newItem/reload expect a remote
+		// path, not an osPath. Without this items would be created
+		// under an OS encoded name which is not the remote name, so
+		// their cache and metadata files are looked up under a twice
+		// encoded (and hence missing) path.
+		name = fromOSPath(name)
 
 		return fn(osPath, fi, name)
 	})

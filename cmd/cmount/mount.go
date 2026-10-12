@@ -188,7 +188,7 @@ func mount(VFS *vfs.VFS, mountPath string, opt *mountlib.Options) (<-chan error,
 			fs.Debugf(nil, "Unmounted successfully")
 			if runtime.GOOS == "windows" {
 				if !waitFor(func() bool {
-					_, err := os.Stat(mountpoint)
+					_, err := os.Stat(statPath(mountpoint))
 					return err != nil
 				}) {
 					fs.Errorf(nil, "mountpoint %q didn't disappear after unmount - continuing anyway", mountpoint)
@@ -213,11 +213,14 @@ func mount(VFS *vfs.VFS, mountPath string, opt *mountlib.Options) (<-chan error,
 	// On Windows the Init signal comes slightly before the mount is ready
 	if runtime.GOOS == "windows" {
 		if !waitFor(func() bool {
-			_, err := os.Stat(mountpoint)
+			_, err := os.Stat(statPath(mountpoint))
 			return err == nil
 		}) {
 			fs.Errorf(nil, "mountpoint %q didn't became available on mount - continuing anyway", mountpoint)
 		}
+	}
+	if opt.DriveIcon != "" {
+		go setDriveIcon(fsys, mountpoint, opt.DriveIcon)
 	}
 
 	return errChan, unmount, mountpoint, nil

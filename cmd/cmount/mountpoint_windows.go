@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/rclone/rclone/cmd/mountlib"
 	"github.com/rclone/rclone/fs"
@@ -17,6 +18,7 @@ import (
 var isDriveRegex = regexp.MustCompile(`^[a-zA-Z]\:$`)
 var isDriveRootPathRegex = regexp.MustCompile(`^[a-zA-Z]\:\\$`)
 var isDriveOrRootPathRegex = regexp.MustCompile(`^[a-zA-Z]\:\\?$`)
+var isMountManagerDriveRegex = regexp.MustCompile(`^\\\\[.?]\\[a-zA-Z]\:\\?$`)
 var isNetworkSharePathRegex = regexp.MustCompile(`^\\\\[^\\\?]+\\[^\\]`)
 
 // isNetworkSharePath returns true if the given string is a valid network share path,
@@ -50,6 +52,16 @@ func isDriveRootPath(l string) bool {
 // and optionally a path separator. See isDrive and isDriveRootPath functions.
 func isDriveOrRootPath(l string) bool {
 	return isDriveOrRootPathRegex.MatchString(l)
+}
+
+// isMountManagerDrive returns true if given string is a drive letter in the
+// device namespace, e.g. "\\.\X:" (or "\\?\X:", optionally with a trailing
+// path separator). WinFsp mounts such a mountpoint through the Windows Mount
+// Manager, so the drive is a real volume (it gets a volume GUID, is global,
+// and GetFinalPathNameByHandle works on it), instead of a DOS device defined
+// in the session only.
+func isMountManagerDrive(l string) bool {
+	return isMountManagerDriveRegex.MatchString(l)
 }
 
 // isDefaultPath returns true if given string is a special keyword used to trigger default mount.
@@ -177,6 +189,21 @@ func getMountpoint(f fs.Fs, mountpath string, opt *mountlib.Options) (mountpoint
 	if isDefaultPath(mountpath) {
 		// Mount path indicates defaults, which will automatically pick an unused drive letter.
 		mountpoint, err = handleDefaultMountpath()
+	} else if isMountManagerDrive(mountpath) {
+		// Mount path is a drive letter in the device namespace ("\\.\X:"),
+		// which WinFsp mounts through the Mount Manager. Checked before the
+		// network share form, which "\\.\X:" would otherwise match.
+		mountpoint = strings.TrimSuffix(mountpath, `\`)
+		drive := mountpoint[len(mountpoint)-2:]
+		if _, statErr := os.Stat(drive + `\`); statErr == nil {
+			err = errors.New("mountpoint path already exists: " + drive)
+		} else if !os.IsNotExist(statErr) {
+			err = fmt.Errorf("failed to retrieve mountpoint path information: %w", statErr)
+		}
+		if opt.NetworkMode {
+			fs.Errorf(nil, "Ignoring --network-mode as it is not supported with Mount Manager mountpoint")
+			opt.NetworkMode = false
+		}
 	} else if isNetworkSharePath(mountpath) {
 		// Mount path is a valid network share path (UNC format, "\\Server\Share" prefix).
 		mountpoint, err = handleNetworkShareMountpath(mountpath, opt)

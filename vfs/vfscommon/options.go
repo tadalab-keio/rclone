@@ -131,6 +131,11 @@ var OptionsInfo = fs.Options{{
 	Help:    "Time to writeback files after last use when using cache",
 	Groups:  "VFS",
 }, {
+	Name:    "vfs_rescue_dir",
+	Default: "",
+	Help:    "Local directory to keep a copy of a file whose upload or rename fails (blank: none)",
+	Groups:  "VFS",
+}, {
 	Name:    "vfs_read_ahead",
 	Default: 0 * fs.Mebi,
 	Help:    "Extra read ahead over --buffer-size when using cache-mode full",
@@ -210,6 +215,7 @@ type Options struct {
 	WriteWait          fs.Duration   `config:"vfs_write_wait"`       // time to wait for in-sequence write
 	ReadWait           fs.Duration   `config:"vfs_read_wait"`        // time to wait for in-sequence read
 	WriteBack          fs.Duration   `config:"vfs_write_back"`       // time to wait before writing back dirty files
+	RescueDir          string        `config:"vfs_rescue_dir"`       // keep a copy of a file whose upload or rename fails here
 	ReadAhead          fs.SizeSuffix `config:"vfs_read_ahead"`       // bytes to read ahead in cache mode "full"
 	UsedIsSize         bool          `config:"vfs_used_is_size"`     // if true, use the `rclone size` algorithm for Used size
 	FastFingerprint    bool          `config:"vfs_fast_fingerprint"` // if set use fast fingerprints

@@ -607,6 +607,41 @@ as the source and the destination will be the same file.
 
 This feature may be useful backups made with --copy-dest.`,
 			Advanced: true,
+		}, {
+			Name:    "inherit_owner",
+			Default: false,
+			Help: `Give new files and directories the owner of their parent directory.
+
+Like Samba's "inherit owner": a new file or directory gets the owner
+and group of the directory it is made in, instead of the user the
+server runs as. Changing the owner needs a server allowed to do it
+(root); if it is refused the owner stays as it was.`,
+			Advanced: true,
+		}, {
+			Name:    "new_file_mode",
+			Default: "",
+			Help: `Permission bits for new files, in octal (e.g. 644).
+
+Leave blank for what the server makes them.`,
+			Advanced: true,
+		}, {
+			Name:    "new_dir_mode",
+			Default: "",
+			Help: `Permission bits for new directories, in octal (e.g. 755).
+
+Leave blank for what the server makes them.`,
+			Advanced: true,
+		}, {
+			Name:    "replace_keep_attrs",
+			Default: false,
+			Help: `Keep the owner and permissions of a file which is replaced.
+
+An upload ends by moving the .partial file over the old file (unless
+--inplace is used), and editors often save through a temporary file
+which is moved over the old one. With this set, the moved file first
+gets the owner, group and permission bits of the file it replaces, as
+when the old file is written to in place.`,
+			Advanced: true,
 		}},
 	}
 	fs.Register(fsi)
@@ -661,6 +696,10 @@ type Options struct {
 	SocksProxy              string               `config:"socks_proxy"`
 	HTTPProxy               string               `config:"http_proxy"`
 	CopyIsHardlink          bool                 `config:"copy_is_hardlink"`
+	InheritOwner            bool                 `config:"inherit_owner"`
+	NewFileMode             string               `config:"new_file_mode"`
+	NewDirMode              string               `config:"new_dir_mode"`
+	ReplaceKeepAttrs        bool                 `config:"replace_keep_attrs"`
 }
 
 // Fs stores the interface to the remote SFTP files
@@ -690,6 +729,10 @@ type Fs struct {
 	hostKeysMu sync.RWMutex
 	hostKeys   map[string][][]byte // algo -> list of trusted marshalled key bytes
 	tofu       bool                // accept and pin unknown host keys on first use
+
+	ownerMu   sync.Mutex
+	ownerHome map[int]string       // uid -> home, read by TrashDir
+	removed   map[string]fileAttrs // path -> attrs of a file just removed
 }
 
 // pendingKey records a host key accepted via --sftp-pin-host-key
@@ -864,6 +907,12 @@ func (f *Fs) newSftpClient(client sshClient, opts ...sftp.ClientOption) (*sftp.C
 	if f.opt.ServerCommand != "" {
 		if err := s.Start(f.opt.ServerCommand); err != nil {
 			return nil, err
+		}
+		// The server command speaks SFTP like the subsystem does, so an
+		// external ssh running it can be reused: without this every
+		// connection was closed after one use, starting ssh again each time.
+		if es, ok := s.(*sshSessionExternal); ok {
+			es.runningSFTP = true
 		}
 	} else {
 		if err := s.RequestSubsystem(f.opt.Subsystem); err != nil {
@@ -1249,6 +1298,9 @@ func NewFs(ctx context.Context, name, root string, m configmap.Mapper) (fs.Fs, e
 	opt := new(Options)
 	err := configstruct.Set(m, opt)
 	if err != nil {
+		return nil, err
+	}
+	if err := checkAttrOptions(opt); err != nil {
 		return nil, err
 	}
 	if len(opt.SSH) != 0 && ((opt.User != currentUser && opt.User != "") || opt.Host != "" || (opt.Port != "22" && opt.Port != "")) {
@@ -1878,6 +1930,7 @@ func (f *Fs) mkdir(ctx context.Context, dirPath string) error {
 		}
 		return fmt.Errorf("mkdir %q failed: %w", dirPath, err)
 	}
+	f.applyNew(ctx, dirPath, true)
 	return nil
 }
 
@@ -1934,6 +1987,7 @@ func (f *Fs) Move(ctx context.Context, src fs.Object, remote string) (fs.Object,
 		return nil, fmt.Errorf("Move: %w", err)
 	}
 	srcPath, dstPath := srcObj.path(), f.remotePath(remote)
+	f.keepReplacedAttrs(c, srcPath, dstPath)
 	if _, ok := c.sftpClient.HasExtension("posix-rename@openssh.com"); ok {
 		err = c.sftpClient.PosixRename(srcPath, dstPath)
 	} else {
@@ -2768,6 +2822,12 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	if err != nil {
 		return fmt.Errorf("Update: %w", err)
 	}
+	// a new file gets the owner and mode of inherit_owner and new_file_mode
+	isNew := false
+	if o.fs.wantsNewAttrs(false) {
+		_, statErr := c.sftpClient.Lstat(o.path())
+		isNew = errors.Is(statErr, iofs.ErrNotExist)
+	}
 	// Hang on to the connection for the whole upload so it doesn't get reused while we are uploading
 	file, err := c.sftpClient.OpenFile(o.path(), os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
 	if err != nil {
@@ -2803,6 +2863,9 @@ func (o *Object) Update(ctx context.Context, in io.Reader, src fs.ObjectInfo, op
 	}
 	// Release connection only when upload has finished so we don't upload multiple files on the same connection
 	o.fs.putSftpConnection(&c, err)
+	if isNew {
+		o.fs.applyNew(ctx, o.path(), false)
+	}
 
 	// Set the mod time - this stats the object if o.fs.opt.SetModTime == true
 	err = o.SetModTime(ctx, src.ModTime(ctx))
@@ -2834,6 +2897,7 @@ func (o *Object) Remove(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("Remove: %w", err)
 	}
+	o.fs.rememberRemoved(c, o.path())
 	err = c.sftpClient.Remove(o.path())
 	o.fs.putSftpConnection(&c, err)
 	return err

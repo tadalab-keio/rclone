@@ -149,6 +149,21 @@ var OptionsInfo = fs.Options{{
 	Help:    "Mount as remote network drive, instead of fixed disk drive (supported on Windows only)",
 	Groups:  "Mount",
 }, {
+	Name:    "windows_trash",
+	Default: true,
+	Help:    "Move what Explorer sends to the Recycle Bin into the freedesktop trash on the remote (/home/<user>/.local/share/Trash) instead of deleting it; the Recycle Bin itself stays on the PC (supported on Windows only)",
+	Groups:  "Mount",
+}, {
+	Name:    "windows_trash_other",
+	Default: ".local/share/Trash",
+	Help:    "Trash on the remote for recycled items not below /home/<user>/; relative paths are from the login directory (supported on Windows only)",
+	Groups:  "Mount",
+}, {
+	Name:    "drive_icon",
+	Default: "",
+	Help:    "Icon file for the drive, which may be on the mount itself (e.g. X:/icon.ico); copied to %ProgramData%/rclone/drive-icons at each mount (supported on Windows only)",
+	Groups:  "Mount",
+}, {
 	Name: "daemon_wait",
 	Default: func() fs.Duration {
 		switch runtime.GOOS {
@@ -192,8 +207,11 @@ type Options struct {
 	NoAppleXattr       bool          `config:"noapplexattr"`
 	DaemonTimeout      fs.Duration   `config:"daemon_timeout"` // OSXFUSE only
 	AsyncRead          bool          `config:"async_read"`
-	NetworkMode        bool          `config:"network_mode"` // Windows only
-	DirectIO           bool          `config:"direct_io"`    // use Direct IO for file access
+	NetworkMode        bool          `config:"network_mode"`        // Windows only
+	WindowsTrash       bool          `config:"windows_trash"`       // Windows only
+	WindowsTrashOther  string        `config:"windows_trash_other"` // Windows only
+	DriveIcon          string        `config:"drive_icon"`          // Windows only
+	DirectIO           bool          `config:"direct_io"`           // use Direct IO for file access
 	CaseInsensitive    fs.Tristate   `config:"mount_case_insensitive"`
 }
 

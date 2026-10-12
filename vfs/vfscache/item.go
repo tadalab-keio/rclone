@@ -63,6 +63,7 @@ type Item struct {
 	opens           int                      // number of times file is open
 	downloaders     *downloaders.Downloaders // a record of the downloaders in action - may be nil
 	o               fs.Object                // object we are caching - may be nil
+	rescued         string                   // size,modtime of the content last copied to --vfs-rescue-dir
 	fd              *os.File                 // handle we are using to read and write to the file
 	info            Info                     // info about the file to persist to backing store
 	writeBackID     writeback.Handle         // id of any writebacks in progress
@@ -644,6 +645,24 @@ func (item *Item) _store(ctx context.Context, storeFn StoreFn) (err error) {
 	// Object has disappeared if cacheObj == nil
 	if cacheObj != nil {
 		o, name := item.o, item.name
+		// An upload which finished while a rename was cancelling it left
+		// the object under the old name: bring it to the new name first,
+		// or the upload below would write to the old name again.
+		if o != nil && o.Remote() != name {
+			fs.Infof(name, "vfs cache: %q was uploaded before a rename, moving it to the new name", o.Remote())
+			var moved fs.Object
+			var moveErr error
+			unlockMutexForCall(&item.mu, func() {
+				moved, moveErr = operations.Move(ctx, item.c.fremote, nil, name, o)
+			})
+			if moveErr != nil || moved == nil {
+				item._rescue(fmt.Sprintf("moving %q to the new name failed", o.Remote()))
+				fs.Errorf(name, "vfs cache: %q not moved to the new name, uploading anew: %v", o.Remote(), moveErr)
+				moved = nil
+			}
+			o = moved
+			item.o = o
+		}
 		unlockMutexForCall(&item.mu, func() {
 			o, err = operations.Copy(ctx, item.c.fremote, o, name, cacheObj)
 		})
@@ -652,6 +671,7 @@ func (item *Item) _store(ctx context.Context, storeFn StoreFn) (err error) {
 				fs.Errorf(name, "Writeback failed: %v", err)
 				return nil
 			}
+			item._rescue("upload failed")
 			return fmt.Errorf("vfs cache: failed to transfer file from cache to remote: %w", err)
 		}
 		item.o = o
@@ -1546,12 +1566,12 @@ func (item *Item) rename(name string, newName string, newObj fs.Object) (err err
 	// id for writeback cancel
 	id := item.writeBackID
 
-	// Set internal state
-	item.name = newName
-	item.o = newObj
-	item._updateFingerprint()
-
-	// Rename cache file if it exists
+	// Rename cache file if it exists.
+	//
+	// Do this before changing any state: on Windows os.Rename can fail with
+	// Access is denied when the destination cache file is open (it is held open
+	// by the target's Item while it is cached) and the item, its files and its
+	// pending write back must all stay untouched in that case.
 	err = rename(item.c.toOSPath(name), item.c.toOSPath(newName)) // No locking in Cache
 
 	// Rename meta file if it exists
@@ -1559,6 +1579,19 @@ func (item *Item) rename(name string, newName string, newObj fs.Object) (err err
 	if err2 != nil {
 		err = err2
 	}
+
+	if err != nil {
+		item.mu.Unlock()
+		if downloaders != nil {
+			_ = downloaders.Close(nil)
+		}
+		return err
+	}
+
+	// Set internal state
+	item.name = newName
+	item.o = newObj
+	item._updateFingerprint()
 
 	item.mu.Unlock()
 
