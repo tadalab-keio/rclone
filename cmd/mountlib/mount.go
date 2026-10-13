@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rclone/rclone/cmd"
@@ -169,6 +170,11 @@ var OptionsInfo = fs.Options{{
 	Help:    "Directory of the mount (path from its root) where nothing may be changed: writes fail at once and files show as read only (cmount only; repeat for more)",
 	Groups:  "Mount",
 }, {
+	Name:    "exit_if_unreachable",
+	Default: "",
+	Help:    "Unmount and exit when a TCP connection to this host:port fails twice in a row, tried every second from the start",
+	Groups:  "Mount",
+}, {
 	Name:    "drive_icon",
 	Default: "",
 	Help:    "Icon file for the drive, which may be on the mount itself (e.g. X:/icon.ico); copied to %ProgramData%/rclone/drive-icons at each mount (supported on Windows only)",
@@ -223,7 +229,8 @@ type Options struct {
 	DriveIcon           string        `config:"drive_icon"`             // Windows only
 	WindowsHideDotFiles bool          `config:"windows_hide_dot_files"` // Windows only
 	ReadOnlyDirs        []string      `config:"read_only_dir"`          // cmount only
-	DirectIO            bool          `config:"direct_io"`              // use Direct IO for file access
+	ExitIfUnreachable   string        `config:"exit_if_unreachable"`
+	DirectIO            bool          `config:"direct_io"` // use Direct IO for file access
 	CaseInsensitive     fs.Tristate   `config:"mount_case_insensitive"`
 }
 
@@ -342,8 +349,16 @@ func NewMountCommand(commandName string, hidden bool, mount MountFn) *cobra.Comm
 				defer cmd.StartStats()()
 			}
 
+			var unmount atomic.Pointer[func() error]
+			if Opt.ExitIfUnreachable != "" {
+				go watchReachable(Opt.ExitIfUnreachable, &unmount)
+			}
 			mnt := NewMountPoint(mount, args[1], cmd.NewFsDir(args), &Opt, &vfscommon.Opt)
 			mountDaemon, err := mnt.Mount()
+			if err == nil && mountDaemon == nil {
+				fn := mnt.Unmount
+				unmount.Store(&fn)
+			}
 
 			// Wait for foreground mount, if any...
 			if mountDaemon == nil {
