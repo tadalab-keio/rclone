@@ -350,14 +350,17 @@ func NewMountCommand(commandName string, hidden bool, mount MountFn) *cobra.Comm
 			}
 
 			var unmount atomic.Pointer[func() error]
+			var remote atomic.Pointer[fs.Fs]
 			if Opt.ExitIfUnreachable != "" {
-				go watchReachable(Opt.ExitIfUnreachable, &unmount)
+				go watchReachable(Opt.ExitIfUnreachable, &unmount, &remote)
 			}
 			mnt := NewMountPoint(mount, args[1], cmd.NewFsDir(args), &Opt, &vfscommon.Opt)
 			mountDaemon, err := mnt.Mount()
 			if err == nil && mountDaemon == nil {
 				fn := mnt.Unmount
 				unmount.Store(&fn)
+				f := mnt.Fs
+				remote.Store(&f)
 			}
 
 			// Wait for foreground mount, if any...
